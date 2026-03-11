@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Carrom 3D - Restored</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;overflow:hidden;background:#1a0000;font-family:Georgia,serif}
+#wrap{position:absolute;inset:0}
+canvas{display:block}
+#hud{position:absolute;inset:0;pointer-events:none;z-index:10}
+
+/* Rebuilt Minimalist Scoring */
+.sp{position:absolute;top:8px;pointer-events:auto;background:rgba(6,3,1,0.92);border:1px solid rgba(212,165,50,0.35);border-radius:50px;padding:8px 15px;display:flex;align-items:center;gap:10px;min-width:80px}
+#spW{left:8px}#spB{right:8px;flex-direction:row-reverse}
+.coin-dot {width:16px;height:16px;border-radius:50%;border:1px solid rgba(255,255,255,0.3)}
+.w-dot {background:#eee0c4} .b-dot {background:#333}
+.snum{font-size:24px;font-weight:bold;color:#d4a532;line-height:1}
+
+/* Options UI with Auto-Hide */
+#ctrl{position:absolute;bottom:8px;right:8px;pointer-events:auto;display:flex;flex-direction:column;gap:4px;align-items:flex-end;transition:opacity 0.4s, transform 0.4s}
+.ui-hide {opacity:0; pointer-events:none; transform:translateY(10px)}
+
+.cb{font-size:9px;letter-spacing:1px;padding:6px 11px;border-radius:6px;border:1px solid rgba(212,165,50,0.32);background:rgba(6,3,1,0.92);color:#d4a532;cursor:pointer}
+#mr{display:flex;gap:3px}
+.mb{font-size:8px;letter-spacing:1px;padding:4px 8px;border-radius:5px;border:1px solid rgba(212,165,50,0.22);background:rgba(6,3,1,0.92);color:#888;cursor:pointer}
+.mb.on{color:#d4a532;border-color:#d4a532}
+
+#pw{position:absolute;bottom:50px;right:8px;width:85px;pointer-events:none;display:none}
+#pfill{height:3px;background:linear-gradient(90deg,#d4a532,#e74c3c);width:0%}
+#tb{position:absolute;bottom:50px;left:50%;transform:translateX(-50%);background:rgba(6,3,1,0.90);border-radius:18px;padding:6px 14px;font-size:10px;color:#d4a532}
+</style>
+</head>
+<body>
+<div id="wrap"></div>
+<div id="hud">
+  <div class="sp" id="spW"><div class="coin-dot w-dot"></div><div class="snum" id="sW">0</div></div>
+  <div class="sp" id="spB"><div class="coin-dot b-dot"></div><div class="snum" id="sB">0</div></div>
+  
+  <div id="tb">WHITE'S TURN</div>
+  <div id="pw"><div id="pfill"></div></div>
+
+  <div id="ctrl">
+    <div id="mr"><button class="mb on" id="b1">1V1</button><button class="mb" id="b2">2V2</button></div>
+    <button class="cb" id="bR">RESET</button>
+    <button class="cb" id="bF">FLIP</button>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// RESTORED PHYSICS & SURFACE DATA
+var B = 6.8; // Rebuilt size
+var HB = B/2;
+var LINE_W = 0.026 * 0.7; // 30% reduction
+var LINE_COL = 0x6b1b1b; // Dark Red
+var TH = 0.14, FH = 0.46, FW = 0.68;
+var RC = 0.193, RS = 0.250;
+var MAX_PWR = 58, SZ = 2.4; // Scaled for 6.8 board
+
+var scene, cam, renderer, striker, coins=[], settling=false, turn='white', flipped=false;
+
+function init() {
+    renderer = new THREE.WebGLRenderer({antialias:true});
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    document.getElementById('wrap').appendChild(renderer.domElement);
+
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x220808);
+
+    cam = new THREE.PerspectiveCamera(26, window.innerWidth/window.innerHeight, 0.1, 200);
+    updateCam();
+
+    scene.add(new THREE.AmbientLight(0xfff8e8, 2.8));
+    var sun = new THREE.DirectionalLight(0xfff4d8, 2.0);
+    sun.position.set(2, 20, 8);
+    sun.castShadow = true;
+    scene.add(sun);
+
+    buildBoard();
+    spawnAll();
+    requestAnimationFrame(loop);
+}
+
+function buildBoard() {
+    // RESTORED: Warm Wood Surface
+    var surf = new THREE.Mesh(new THREE.BoxGeometry(B, TH, B), new THREE.MeshStandardMaterial({color:0xd2a055, roughness:0.58}));
+    surf.receiveShadow = true; surf.position.y = TH/2;
+    scene.add(surf);
+
+    // RESTORED: Mahogany Frame with Diagonal Stripes
+    var fMat = new THREE.MeshStandardMaterial({color:0x5a1e06});
+    var f1 = new THREE.Mesh(new THREE.BoxGeometry(B+FW*2, FH, FW), fMat);
+    f1.position.set(0, FH/2, HB+FW/2);
+    scene.add(f1, f1.clone().translateZ(-(B+FW)));
+
+    // REBUILT: Thin Dark Red Lines
+    var lMat = new THREE.MeshBasicMaterial({color:LINE_COL, transparent:true, opacity:0.6});
+    var ring = new THREE.Mesh(new THREE.RingGeometry(0.7, 0.7+LINE_W, 64), lMat);
+    ring.rotation.x = -Math.PI/2; ring.position.y = TH+0.005;
+    scene.add(ring);
+}
+
+function spawnAll() {
+    coins.forEach(c => scene.remove(c.mesh)); coins = [];
+    if(striker) scene.remove(striker.mesh);
+    
+    // Core Layout
+    addCoin(0, 0, 0xcc1111, RC, 'red'); // Queen
+    for(let i=0; i<6; i++) {
+        let a = (i/6)*Math.PI*2;
+        addCoin(Math.cos(a)*0.5, Math.sin(a)*0.5, i%2==0?0xeee0c4:0x141210, RC, i%2==0?'white':'black');
+    }
+    striker = addCoin(0, flipped ? -SZ : SZ, 0xddbe30, RS, 'striker');
+    striker.vel = new THREE.Vector3();
+}
+
+function addCoin(x, z, col, r, type) {
+    var mesh = new THREE.Mesh(new THREE.CylinderGeometry(r, r, 0.15, 32), new THREE.MeshStandardMaterial({color:col}));
+    mesh.position.set(x, TH, z); mesh.castShadow = true;
+    scene.add(mesh);
+    var p = { mesh, vel: new THREE.Vector3(), type };
+    coins.push(p); return p;
+}
+
+function loop() {
+    requestAnimationFrame(loop);
+    let moving = false;
+    coins.forEach(c => {
+        if(c.vel.length() > 0.01) {
+            c.mesh.position.add(c.vel);
+            c.vel.multiplyScalar(0.98);
+            moving = true;
+        }
+    });
+
+    // UI AUTO-HIDE LOGIC
+    document.getElementById('ctrl').className = moving ? 'ui-hide' : '';
+    renderer.render(scene, cam);
+}
+
+function updateCam() {
+    let f = flipped ? -1 : 1;
+    cam.position.set(0, 12, f * 2.5);
+    cam.lookAt(0, 0, 0);
+}
+
+// Controls
+document.getElementById('bF').onclick = () => { flipped=!flipped; updateCam(); spawnAll(); };
+document.getElementById('bR').onclick = () => location.reload();
+window.onpointerdown = () => { if(striker.vel.length()<0.01) striker.vel.z = flipped?0.18:-0.18; };
+
+init();
+</script>
+</body>
+</html>
