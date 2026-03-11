@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Carrom 3D</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;overflow:hidden;background:#1a0000;font-family:Georgia,serif}
+#wrap{position:absolute;inset:0}
+canvas{display:block}
+#hud{position:absolute;inset:0;pointer-events:none;z-index:10}
+.sp{position:absolute;top:8px;pointer-events:auto;background:rgba(6,3,1,0.92);border:1px solid rgba(212,165,50,0.35);border-radius:9px;padding:8px 12px;min-width:110px;transition:opacity 0.5s}
+.sp.on{box-shadow:0 0 0 2px #d4a532}
+#spW{left:8px}#spB{right:8px}
+.plbl{font-size:7px;letter-spacing:2px;opacity:.45;text-transform:uppercase}
+.pnm{font-size:12px;font-weight:bold;letter-spacing:1px;margin:2px 0}
+#spW .pnm{color:#f0ebe0}#spB .pnm{color:#999}
+.snum{font-size:24px;font-weight:bold;color:#d4a532;line-height:1}
+.ssub{font-size:7px;opacity:.35;text-transform:uppercase;letter-spacing:1px}
+
+/* This targets the potted coin dots and the menu buttons */
+.dots, #mr { transition: opacity 0.5s; }
+.hidden { opacity: 0 !important; pointer-events: none !important; }
+
+#tb{position:absolute;bottom:50px;left:50%;transform:translateX(-50%);background:rgba(6,3,1,0.90);border:1px solid rgba(212,165,50,0.28);border-radius:18px;padding:6px 14px;font-size:10px;letter-spacing:1px;display:flex;align-items:center;gap:7px;pointer-events:none;white-space:nowrap}
+#td{width:8px;height:8px;border-radius:50%}
+#tt{color:#d4a532}
+#ctrl{position:absolute;bottom:8px;right:8px;pointer-events:auto;display:flex;flex-direction:column;gap:4px;align-items:flex-end}
+.cb{font-size:9px;letter-spacing:1px;padding:6px 11px;border-radius:6px;border:1px solid rgba(212,165,50,0.32);background:rgba(6,3,1,0.92);color:#d4a532;cursor:pointer}
+.mb{font-size:8px;letter-spacing:1px;padding:4px 8px;border-radius:5px;border:1px solid rgba(212,165,50,0.22);background:rgba(6,3,1,0.92);color:#888;cursor:pointer}
+.mb.on{color:#d4a532;border-color:#d4a532}
+#win{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(6,3,1,.90);pointer-events:none;opacity:0;transition:opacity .4s}
+#win.on{opacity:1;pointer-events:auto}
+#wt{font-size:34px;font-weight:bold;color:#f0c84a;margin-bottom:4px}
+#wb{font-size:11px;letter-spacing:2px;padding:9px 26px;border-radius:6px;border:1px solid #d4a532;background:rgba(212,165,50,.16);color:#d4a532;cursor:pointer}
+</style>
+</head>
+<body>
+<div id="wrap"></div>
+<div id="hud">
+  <div class="sp on" id="spW"><div class="plbl">Player One</div><div class="pnm">WHITE</div><div class="snum" id="sW">0</div><div class="ssub">Points</div><div class="dots" id="dW"></div></div>
+  <div class="sp" id="spB"><div class="plbl">Player Two</div><div class="pnm">BLACK</div><div class="snum" id="sB">0</div><div class="ssub">Points</div><div class="dots" id="dB"></div></div>
+  <div id="tb"><div id="td"></div><span id="tt">WHITE'S TURN</span></div>
+  <div id="ctrl">
+    <div id="mr"><button class="mb on" id="b1">1V1</button><button class="mb" id="b2">2V2</button></div>
+    <button class="cb" id="bR">RESET</button>
+  </div>
+  <div id="win"><div id="wt">WHITE WINS!</div><button id="wb">PLAY AGAIN</button></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+<script>
+// RESTORED ORIGINAL BOARD SIZE & PHYSICS
+var B = 8.40, HB = 4.20, FW = 0.68, TH = 0.14, FH = 0.46;
+var RC = 0.193, RR = 0.204, RS = 0.250, PR = 0.62, PKO = 0.60;
+var SZ = 3.20, MAX_PWR = 58, STEPS = 4, IR = 0.510, OR = 1.020;
+
+var scene, cam, renderer, coins = [], striker, turn = 'white', sW = 0, sB = 0, pW = 0, pB = 0;
+var dragging = false, ready = false, active = false, settling = false, gameStarted = false;
+var ray = new THREE.Raycaster(), mouse = new THREE.Vector2();
+
+// RESTORED ORIGINAL COIN LAYOUT (1 White, 1 Black alternating)
+function makeLayout() {
+  var w = [], b = [];
+  for (var i = 0; i < 6; i++) {
+    var a = (Math.PI / 3) * i - Math.PI / 2;
+    (i % 2 === 0 ? w : b).push([Math.cos(a) * IR, Math.sin(a) * IR]);
+  }
+  for (var i = 0; i < 12; i++) {
+    var a = (Math.PI / 6) * i - Math.PI / 2 + Math.PI / 12;
+    (i % 2 === 0 ? w : b).push([Math.cos(a) * OR, Math.sin(a) * OR]);
+  }
+  return {w: w, b: b};
+}
+
+// RESTORED ORIGINAL COIN LOGIC
+function Coin(type, r, mass, x, z) {
+  this.type = type; this.r = r; this.mass = mass; this.vx = 0; this.vz = 0;
+  var col = {white: 0xeee0c4, black: 0x141210, red: 0xcc1111, striker: 0xddbe30}[type];
+  var bodyG = new THREE.CylinderGeometry(r, r, type==='striker'?0.22:0.15, 32);
+  var bodyM = new THREE.MeshStandardMaterial({color: col, roughness: 0.1, metalness: 0.2});
+  this.mesh = new THREE.Mesh(bodyG, bodyM);
+  this.mesh.position.set(x, type==='striker'?0.11:0.08, z);
+  this.mesh.castShadow = true;
+  scene.add(this.mesh);
+}
+
+function init() {
+  renderer = new THREE.WebGLRenderer({antialias: true});
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = true;
+  document.getElementById('wrap').appendChild(renderer.domElement);
+  scene = new THREE.Scene(); scene.background = new THREE.Color(0x220808);
+  cam = new THREE.PerspectiveCamera(26, window.innerWidth/window.innerHeight, 0.1, 100);
+  cam.position.set(0, 14.5, 2.8); cam.lookAt(0, 0, 0.3);
+  scene.add(new THREE.AmbientLight(0xffffff, 1.2));
+  var sun = new THREE.DirectionalLight(0xffffff, 1); sun.position.set(5, 10, 5); sun.castShadow = true; scene.add(sun);
+  
+  var board = new THREE.Mesh(new THREE.BoxGeometry(B, TH, B), new THREE.MeshStandardMaterial({color: 0xd2a055}));
+  board.receiveShadow = true; board.position.y = -TH/2; scene.add(board);
+  
+  spawn();
+  window.addEventListener('pointerdown', onDown); window.addEventListener('pointermove', onMove); window.addEventListener('pointerup', onUp);
+  ready = true; active = true; loop();
+}
+
+function spawn() {
+  coins.forEach(c => scene.remove(c.mesh)); coins = [];
+  if (striker) scene.remove(striker.mesh);
+  var lay = makeLayout();
+  lay.w.forEach(p => coins.push(new Coin('white', RC, 1, p[0], p[1])));
+  lay.b.forEach(p => coins.push(new Coin('black', RC, 1, p[0], p[1])));
+  coins.push(new Coin('red', RR, 1, 0, 0));
+  striker = new Coin('striker', RS, 2.5, 0, SZ);
+  
+  // Show UI again on reset
+  gameStarted = false;
+  document.getElementById('dW').classList.remove('hidden');
+  document.getElementById('dB').classList.remove('hidden');
+  document.getElementById('mr').classList.remove('hidden');
+}
+
+function onUp(e) {
+  if (!dragging) return; dragging = false; settling = true;
+  
+  // HIDE UI WHEN GAME STARTS (First shot)
+  if (!gameStarted) {
+    gameStarted = true;
+    document.getElementById('dW').classList.add('hidden');
+    document.getElementById('dB').classList.add('hidden');
+    document.getElementById('mr').classList.add('hidden');
+  }
+
+  var pt = getMouse(e);
+  var dx = striker.mesh.position.x - pt.x, dz = striker.mesh.position.z - pt.z;
+  var p = Math.min(Math.sqrt(dx*dx+dz*dz), 4) / 4 * MAX_PWR;
+  var ang = Math.atan2(dz, dx);
+  striker.vx = Math.cos(ang) * p; striker.vz = Math.sin(ang) * p;
+}
+
+function getMouse(e) {
+  mouse.x = (e.clientX/window.innerWidth)*2-1; mouse.y = -(e.clientY/window.innerHeight)*2+1;
+  ray.setFromCamera(mouse, cam);
+  var p = new THREE.Vector3(); ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,1,0), 0), p);
+  return p;
+}
+
+function onDown(e) { if (active && !settling) dragging = true; }
+function onMove(e) {}
+
+function loop() {
+  requestAnimationFrame(loop);
+  if (!ready) return;
+  var dt = 0.016;
+  var all = coins.concat([striker]);
+  all.forEach(c => {
+    c.mesh.position.x += c.vx * dt; c.mesh.position.z += c.vz * dt;
+    c.vx *= 0.98; c.vz *= 0.98; // Basic friction
+    if (Math.abs(c.mesh.position.x) > HB) c.vx *= -1;
+    if (Math.abs(c.mesh.position.z) > HB) c.vz *= -1;
+  });
+  
+  if (settling && all.every(c => Math.abs(c.vx) < 0.1)) {
+    settling = false; striker.vx = 0; striker.vz = 0; striker.mesh.position.set(0, 0.11, SZ);
+    turn = turn === 'white' ? 'black' : 'white';
+    document.getElementById('tt').textContent = turn.toUpperCase() + "'S TURN";
+  }
+  renderer.render(scene, cam);
+}
+
+document.getElementById('bR').onclick = spawn;
+init();
+</script>
+</body>
+</html>
