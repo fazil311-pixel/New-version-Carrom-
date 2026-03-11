@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8"/>
+    <title>Carrom 3D Minimal</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+    <style>
+        :root { --gold: #d4a532; --dark: #0f0a0a; --red: #e74c3c; }
+        * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+        body { width: 100%; height: 100%; overflow: hidden; background: var(--dark); font-family: sans-serif; }
+        
+        #hud { position: absolute; inset: 0; pointer-events: none; z-index: 10; color: white; }
+        
+        /* Minimalist Score: Only Color and Number */
+        .score-box {
+            position: absolute; top: 20px; display: flex; align-items: center; gap: 12px;
+            background: rgba(0,0,0,0.6); padding: 10px 20px; border-radius: 40px;
+        }
+        #p1-score { left: 20px; }
+        #p2-score { right: 20px; flex-direction: row-reverse; }
+        
+        .coin-indicator { width: 18px; height: 18px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.2); }
+        .white-coin { background: #eee0c4; }
+        .black-coin { background: #333; }
+        .score-val { font-size: 28px; font-weight: bold; color: var(--gold); }
+
+        /* Dynamic Controls */
+        #ctrl-ui { 
+            position: absolute; bottom: 20px; right: 20px; pointer-events: auto; 
+            display: flex; flex-direction: column; gap: 8px; transition: opacity 0.4s;
+        }
+        .hidden { opacity: 0; pointer-events: none; }
+
+        button {
+            background: rgba(0,0,0,0.8); border: 1px solid rgba(212,165,50,0.3); color: var(--gold);
+            padding: 8px 16px; cursor: pointer; font-size: 11px; border-radius: 6px; letter-spacing: 1px;
+        }
+
+        #power-meter {
+            position: absolute; bottom: 40px; left: 50%; transform: translateX(-50%);
+            width: 160px; height: 4px; background: rgba(255,255,255,0.1);
+            border-radius: 2px; display: none; overflow: hidden;
+        }
+        #power-fill { height: 100%; width: 0%; background: var(--gold); }
+    </style>
+</head>
+<body>
+
+<div id="hud">
+    <div id="p1-score" class="score-box">
+        <div class="coin-indicator white-coin"></div>
+        <div class="score-val" id="s1">0</div>
+    </div>
+    <div id="p2-score" class="score-box">
+        <div class="coin-indicator black-coin"></div>
+        <div class="score-val" id="s2">0</div>
+    </div>
+
+    <div id="power-meter"><div id="power-fill"></div></div>
+
+    <div id="ctrl-ui">
+        <div style="display:flex; gap:5px;">
+            <button>1V1</button>
+            <button>2V2</button>
+        </div>
+        <button onclick="location.reload()">RESET</button>
+        <button id="flip-btn">FLIP</button>
+    </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+<script>
+// Configuration
+const B = 6.8; // Board Size Rebuilt to 6.8
+const HB = B / 2;
+const LINE_THICKNESS = 0.02 * 0.7; // 30% reduction in width
+
+class CarromPro {
+    constructor() {
+        this.init();
+        this.createBoard();
+        this.spawnPieces();
+        this.animate();
+    }
+
+    init() {
+        this.scene = new THREE.Scene();
+        this.scene.background = new THREE.Color(0x1a0a05);
+        this.camera = new THREE.PerspectiveCamera(28, window.innerWidth / window.innerHeight, 0.1, 1000);
+        this.camera.position.set(0, 11, 2.5);
+        this.camera.lookAt(0, 0, 0);
+
+        this.renderer = new THREE.WebGLRenderer({ antialias: true });
+        this.renderer.setSize(window.innerWidth, window.innerHeight);
+        this.renderer.shadowMap.enabled = true;
+        document.body.appendChild(this.renderer.domElement);
+
+        this.scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+        const sun = new THREE.DirectionalLight(0xffffff, 0.8);
+        sun.position.set(2, 10, 5);
+        sun.castShadow = true;
+        this.scene.add(sun);
+        
+        this.isMoving = false;
+    }
+
+    createBoard() {
+        // Main Wood Surface
+        const surf = new THREE.Mesh(
+            new THREE.BoxGeometry(B, 0.1, B),
+            new THREE.MeshStandardMaterial({ color: 0xd2a055, roughness: 0.4 })
+        );
+        surf.receiveShadow = true;
+        this.scene.add(surf);
+
+        // Frame
+        const fMat = new THREE.MeshStandardMaterial({ color: 0x3d1a05 });
+        const frame = new THREE.Mesh(new THREE.BoxGeometry(B + 0.8, 0.4, 0.4), fMat);
+        frame.position.set(0, 0.15, HB + 0.2);
+        this.scene.add(frame.clone());
+        frame.position.z = -(HB + 0.2);
+        this.scene.add(frame);
+
+        // Thinner Lines (30% reduction)
+        const lineMat = new THREE.MeshBasicMaterial({ color: 0x5a3a22, transparent: true, opacity: 0.6 });
+        const ringGeo = new THREE.RingGeometry(0.8, 0.8 + LINE_THICKNESS, 64);
+        const centerRing = new THREE.Mesh(ringGeo, lineMat);
+        centerRing.rotation.x = -Math.PI/2;
+        centerRing.position.y = 0.051;
+        this.scene.add(centerRing);
+    }
+
+    spawnPieces() {
+        this.pieces = [];
+        // Center Queen
+        this.addPiece(0, 0, 0xff0000, 0.19);
+        // Circle layout... (Adding white/black)
+        for(let i=0; i<6; i++) {
+            const a = (i/6)*Math.PI*2;
+            const col = i%2===0 ? 0xf0ebe0 : 0x222222;
+            this.addPiece(Math.cos(a)*0.5, Math.sin(a)*0.5, col, 0.18);
+        }
+        this.striker = this.addPiece(0, 2.4, 0xd4a532, 0.24);
+        this.striker.isStriker = true;
+        this.striker.vel = new THREE.Vector3();
+    }
+
+    addPiece(x, z, col, r) {
+        const mesh = new THREE.Mesh(
+            new THREE.CylinderGeometry(r, r, 0.12, 32),
+            new THREE.MeshStandardMaterial({ color: col, roughness: 0.2 })
+        );
+        mesh.position.set(x, 0.1, z);
+        mesh.castShadow = true;
+        this.scene.add(mesh);
+        const p = { mesh, radius: r, vel: new THREE.Vector3() };
+        this.pieces.push(p);
+        return p;
+    }
+
+    updateUI() {
+        const ui = document.getElementById('ctrl-ui');
+        // If pieces are moving, hide the options
+        if (this.isMoving) {
+            ui.classList.add('hidden');
+        } else {
+            ui.classList.remove('hidden');
+        }
+    }
+
+    animate() {
+        requestAnimationFrame(() => this.animate());
+        
+        // Simple Physics Simulation
+        let motionDetected = false;
+        this.pieces.forEach(p => {
+            if (p.vel && p.vel.length() > 0.005) {
+                p.mesh.position.add(p.vel);
+                p.vel.multiplyScalar(0.98); // Friction
+                motionDetected = true;
+            }
+        });
+
+        this.isMoving = motionDetected;
+        this.updateUI();
+        this.renderer.render(this.scene, this.camera);
+    }
+}
+
+const game = new CarromPro();
+
+// Simple touch-to-shoot mock for demo
+window.addEventListener('pointerdown', () => {
+    if(!game.isMoving) {
+        game.striker.vel.z = -0.15;
+    }
+});
+</script>
+
+</body>
+</html>
