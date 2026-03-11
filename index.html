@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Carrom 3D Pro</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;overflow:hidden;background:#1a0000;font-family:Georgia,serif}
+#wrap{position:absolute;inset:0}
+canvas{display:block}
+#hud{position:absolute;inset:0;pointer-events:none;z-index:10}
+.sp{position:absolute;top:15px;pointer-events:auto;background:rgba(6,3,1,0.95);border:1px solid rgba(212,165,50,0.4);border-radius:8px;padding:12px;min-width:130px}
+#spW{left:15px}#spB{right:15px}
+.plbl{font-size:8px;letter-spacing:2px;opacity:.5;text-transform:uppercase;color:#d4a532}
+.pnm{font-size:14px;font-weight:bold;letter-spacing:1px;margin:2px 0;color:#f0ebe0}
+.snum{font-size:28px;font-weight:bold;color:#d4a532;line-height:1}
+#tb{position:absolute;bottom:85px;left:50%;transform:translateX(-50%);background:rgba(6,3,1,0.92);border:1px solid rgba(212,165,50,0.3);border-radius:20px;padding:8px 18px;font-size:11px;letter-spacing:1px;display:flex;align-items:center;gap:8px;color:#d4a532}
+#td{width:10px;height:10px;border-radius:50%;background:#f0ebe0}
+#ctrl{position:absolute;bottom:15px;right:15px;pointer-events:auto;display:flex;flex-direction:column;gap:6px;align-items:flex-end}
+.cb{font-size:10px;letter-spacing:2px;padding:10px 20px;border-radius:6px;border:1px solid rgba(212,165,50,0.35);background:rgba(6,3,1,0.95);color:#d4a532;cursor:pointer;width:110px;text-align:center}
+#mr{display:flex;gap:4px}
+.mb{font-size:9px;letter-spacing:1px;padding:8px 12px;border-radius:5px;border:1px solid rgba(212,165,50,0.25);background:rgba(6,3,1,0.95);color:#888;cursor:pointer}
+.mb.on{color:#d4a532;border-color:#d4a532;background:rgba(212,165,50,0.1)}
+#pw{position:absolute;bottom:85px;right:15px;width:100px;display:none}
+#pbar{height:4px;border-radius:2px;background:rgba(212,165,50,0.15);overflow:hidden}
+#pfill{height:100%;width:0%;background:linear-gradient(90deg,#d4a532,#e74c3c)}
+#win{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(6,3,1,0.95);opacity:0;pointer-events:none;transition:opacity .4s}
+#win.on{opacity:1;pointer-events:auto}
+#wt{font-size:36px;color:#f0c84a;margin-bottom:10px}
+#wb{padding:12px 30px;border-radius:6px;border:1px solid #d4a532;background:none;color:#d4a532;cursor:pointer;letter-spacing:2px}
+</style>
+</head>
+<body>
+<div id="wrap"></div>
+<div id="hud">
+  <div class="sp" id="spW"><div class="plbl">Player One</div><div class="pnm">WHITE</div><div class="snum" id="sW">0</div></div>
+  <div class="sp" id="spB"><div class="plbl">Player Two</div><div class="pnm">BLACK</div><div class="snum" id="sB">0</div></div>
+  <div id="tb"><div id="td"></div><span id="tt">WHITE'S TURN</span></div>
+  <div id="pw"><div id="pbar"><div id="pfill"></div></div></div>
+  <div id="ctrl">
+    <div id="mr"><button class="mb on" id="b1">1V1</button><button class="mb" id="b2">2V2</button></div>
+    <button class="cb" id="bR">RESET</button>
+  </div>
+  <div id="win"><div id="wt">WINS!</div><button id="wb">PLAY AGAIN</button></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// Dimensions matched to your photo
+var B = 7.80, HB = 3.90, FW = 0.75, TH = 0.14, FH = 0.46;
+var RC = 0.193, RR = 0.204, RS = 0.250, PR = 0.60, PKO = 0.58;
+var SZ = 3.35; // Striker set back further to match photo
+var POCKETS = [{x:-HB+PKO,z:-HB+PKO},{x:HB-PKO,z:-HB+PKO},{x:-HB+PKO,z:HB-PKO},{x:HB-PKO,z:HB-PKO}];
+var FRIC_C = 2.1, FRIC_V = 1.4, REST_V = 0.05, ELAST = 0.86, WELAST = 0.68, MAX_PWR = 55, STEPS = 4;
+var IR = 0.51, OR = 1.02;
+
+var scene, cam, renderer, coins = [], striker, dragging = false, ready = false, active = false, settling = false, turn = 'white', sW = 0, sB = 0;
+var ray = new THREE.Raycaster(), mouse = new THREE.Vector2();
+
+function makeLayout() {
+  var w = [], b = [];
+  // Inner ring: alternating
+  for (var i = 0; i < 6; i++) {
+    var a = (Math.PI/3)*i - Math.PI/2;
+    (i%2===0 ? w : b).push([Math.cos(a)*IR, Math.sin(a)*IR]);
+  }
+  // Outer ring: professional "Rose" pattern (2 White, 2 Black)
+  for (var i = 0; i < 12; i++) {
+    var a = (Math.PI/6)*i - Math.PI/2 + Math.PI/12;
+    if ([0,1,4,5,8,9].includes(i)) w.push([Math.cos(a)*OR, Math.sin(a)*OR]);
+    else b.push([Math.cos(a)*OR, Math.sin(a)*OR]);
+  }
+  return {w:w, b:b};
+}
+
+function Coin(type, r, mass, x, z) {
+  this.type = type; this.r = r; this.mass = mass; this.vx = 0; this.vz = 0;
+  var col = {white: 0xeee0c4, black: 0x222222, red: 0xcc1111, striker: 0xddbe30}[type];
+  var geo = new THREE.CylinderGeometry(r, r, type==='striker'?0.22:0.15, 32);
+  var mat = new THREE.MeshStandardMaterial({color: col, roughness: 0.4, metalness: 0.2});
+  this.mesh = new THREE.Mesh(geo, mat);
+  this.mesh.position.set(x, type==='striker'?0.11:0.08, z);
+  this.mesh.castShadow = true;
+  scene.add(this.mesh);
+}
+Coin.prototype.update = function(dt) {
+  var s = Math.sqrt(this.vx*this.vx + this.vz*this.vz);
+  if (s < REST_V) { this.vx = 0; this.vz = 0; return; }
+  var ns = (s - FRIC_C * dt) * Math.max(0, 1 - FRIC_V * dt);
+  if (ns < 0) ns = 0;
+  this.vx *= ns/s; this.vz *= ns/s;
+  this.mesh.position.x += this.vx * dt;
+  this.mesh.position.z += this.vz * dt;
+};
+
+function init() {
+  renderer = new THREE.WebGLRenderer({antialias: true});
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = true;
+  document.getElementById('wrap').appendChild(renderer.domElement);
+  scene = new THREE.Scene(); scene.background = new THREE.Color(0x1a0505);
+  cam = new THREE.PerspectiveCamera(25, window.innerWidth/window.innerHeight, 0.1, 100);
+  cam.position.set(0, 15, 0); cam.lookAt(0, 0, 0);
+  scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+  var l = new THREE.DirectionalLight(0xffffff, 1); l.position.set(5, 15, 5); l.castShadow = true; scene.add(l);
+  
+  // Board
+  var board = new THREE.Mesh(new THREE.BoxGeometry(B, TH, B), new THREE.MeshStandardMaterial({color: 0xe5c28a}));
+  board.receiveShadow = true; board.position.y = -TH/2; scene.add(board);
+  
+  spawn();
+  window.addEventListener('pointerdown', onDown); window.addEventListener('pointermove', onMove); window.addEventListener('pointerup', onUp);
+  ready = true; active = true; loop();
+}
+
+function spawn() {
+  coins.forEach(c => scene.remove(c.mesh)); coins = [];
+  if (striker) scene.remove(striker.mesh);
+  var l = makeLayout();
+  l.w.forEach(p => coins.push(new Coin('white', RC, 1, p[0], p[1])));
+  l.b.forEach(p => coins.push(new Coin('black', RC, 1, p[0], p[1])));
+  coins.push(new Coin('red', RR, 1, 0, 0));
+  striker = new Coin('striker', RS, 2.5, 0, SZ);
+}
+
+function onDown(e) {
+  if (!active || settling) return;
+  var pt = getMouse(e);
+  if (Math.sqrt(Math.pow(pt.x-striker.mesh.position.x,2)+Math.pow(pt.z-striker.mesh.position.z,2)) < RS*2) {
+    dragging = true; document.getElementById('pw').style.display = 'block';
+  }
+}
+function onMove(e) {
+  if (!dragging) return;
+  var pt = getMouse(e);
+  var dx = striker.mesh.position.x - pt.x, dz = striker.mesh.position.z - pt.z;
+  var p = Math.min(Math.sqrt(dx*dx+dz*dz), 4) / 4;
+  document.getElementById('pfill').style.width = (p*100)+'%';
+}
+function onUp(e) {
+  if (!dragging) return; dragging = false; settling = true;
+  document.getElementById('pw').style.display = 'none';
+  var pt = getMouse(e);
+  var dx = striker.mesh.position.x - pt.x, dz = striker.mesh.position.z - pt.z;
+  var p = Math.min(Math.sqrt(dx*dx+dz*dz), 4) / 4 * MAX_PWR;
+  var ang = Math.atan2(dz, dx);
+  striker.vx = Math.cos(ang) * p; striker.vz = Math.sin(ang) * p;
+}
+function getMouse(e) {
+  mouse.x = (e.clientX/window.innerWidth)*2-1; mouse.y = -(e.clientY/window.innerHeight)*2+1;
+  ray.setFromCamera(mouse, cam);
+  var p = new THREE.Vector3(); ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,1,0), 0), p);
+  return p;
+}
+
+function loop() {
+  requestAnimationFrame(loop);
+  if (!ready) return;
+  var dt = 0.016;
+  for (var s=0; s<STEPS; s++) {
+    var all = coins.concat([striker]);
+    all.forEach(c => {
+        c.update(dt/STEPS);
+        if (Math.abs(c.mesh.position.x) > HB-RC) { c.vx *= -WELAST; c.mesh.position.x = Math.sign(c.mesh.position.x)*(HB-RC); }
+        if (Math.abs(c.mesh.position.z) > HB-RC) { c.vz *= -WELAST; c.mesh.position.z = Math.sign(c.mesh.position.z)*(HB-RC); }
+    });
+    // Simple Collisions
+    for(var i=0; i<all.length; i++) {
+        for(var j=i+1; j<all.length; j++) {
+            var a=all[i], b=all[j];
+            var dx=b.mesh.position.x-a.mesh.position.x, dz=b.mesh.position.z-a.mesh.position.z, dist=Math.sqrt(dx*dx+dz*dz);
+            if(dist < a.r+b.r) {
+                var nx=dx/dist, nz=dz/dist, pen = (a.r+b.r)-dist;
+                a.mesh.position.x -= nx*pen*0.5; a.mesh.position.z -= nz*pen*0.5;
+                b.mesh.position.x += nx*pen*0.5; b.mesh.position.z += nz*pen*0.5;
+                var rv = (b.vx-a.vx)*nx + (b.vz-a.vz)*nz;
+                if(rv<0) {
+                    var imp = -(1.8*rv)/(1/a.mass+1/b.mass);
+                    a.vx -= (imp/a.mass)*nx; a.vz -= (imp/a.mass)*nz;
+                    b.vx += (imp/b.mass)*nx; b.vz += (imp/b.mass)*nz;
+                }
+            }
+        }
+    }
+  }
+  // Pocketing check
+  for(var i=coins.length-1; i>=0; i--) {
+      var c=coins[i];
+      POCKETS.forEach(p => {
+          if(Math.sqrt(Math.pow(c.mesh.position.x-p.x,2)+Math.pow(c.mesh.position.z-p.z,2)) < PR) {
+              if(c.type==='white') sW++; else if(c.type==='black') sB++;
+              scene.remove(c.mesh); coins.splice(i,1);
+              document.getElementById('sW').textContent=sW; document.getElementById('sB').textContent=sB;
+          }
+      });
+  }
+  // Settle turn
+  if(settling && coins.concat([striker]).every(c => Math.abs(c.vx)<0.1)) {
+      settling = false; striker.vx=0; striker.vz=0; striker.mesh.position.set(0,0.11,SZ);
+      turn = turn==='white'?'black':'white';
+      document.getElementById('tt').textContent = turn.toUpperCase() + "'S TURN";
+      document.getElementById('td').style.background = turn==='white'?'#f0ebe0':'#333';
+  }
+  renderer.render(scene, cam);
+}
+
+document.getElementById('bR').onclick = () => { sW=0; sB=0; spawn(); document.getElementById('sW').textContent='0'; document.getElementById('sB').textContent='0'; };
+init();
+</script>
+</body>
+</html>
